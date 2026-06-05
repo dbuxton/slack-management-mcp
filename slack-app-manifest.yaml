@@ -1,0 +1,29 @@
+# Slack app manifest for slack-management-mcp.
+#
+# Create the app: https://api.slack.com/apps -> "Create New App" -> "From a manifest"
+# Paste this file, then install the app to your workspace and copy the
+# "Bot User OAuth Token" (starts with xoxb-) into the SLACK_BOT_TOKEN env var.
+display_information:
+  name: Slack Management MCP
+  description: Look up users and channels, and invite users to channels.
+
+features:
+  bot_user:
+    display_name: slack-management-mcp
+    always_online: false
+
+oauth_config:
+  scopes:
+    bot:
+      - users:read         # look up users (users.info)
+      - users:read.email   # look up users by email (users.lookupByEmail)
+      - channels:read      # list / read public channels
+      - groups:read        # list / read private channels the bot is in
+      - channels:manage    # invite users to public channels
+      - groups:write       # invite users to private channels
+      - channels:join      # let the bot self-join public channels before inviting
+
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
