@@ -44,12 +44,13 @@ class FakeWebClient:
 
     def conversations_info(self, channel):  # noqa: N802
         self.calls.append(("conversations_info", {"channel": channel}))
-        # CNEEDJOIN is a public channel the bot has not joined yet.
+        # IDs starting with 'G' model private channels; others are public.
+        is_private = channel.startswith("G")
         return FakeResponse(
             channel={
                 "id": channel,
-                "name": "general",
-                "is_private": False,
+                "name": "general" if not is_private else "secret",
+                "is_private": is_private,
                 "is_member": channel != "CNEEDJOIN",
             }
         )
@@ -125,19 +126,18 @@ def test_invite_success_resolves_ids(fake_client):
     assert invited and invited[0][1]["users"] == "U123"
 
 
-def test_invite_self_joins_public_channel_when_not_member(fake_client):
+def test_invite_always_attempts_join_for_public_channel(fake_client):
     fake, _ = fake_client
-    result = server.invite_user_to_channel(channel="CNEEDJOIN", user="U123")
+    result = server.invite_user_to_channel(channel="CPUBLIC", user="U123")
     assert result["ok"] is True
     assert result["bot_joined_channel"] is True
     assert any(c[0] == "conversations_join" for c in fake.calls)
 
 
-def test_invite_does_not_join_when_already_member(fake_client):
+def test_invite_skips_join_for_private_channel(fake_client):
     fake, _ = fake_client
-    # conversations_list channels report is_member None (treated as "unknown"),
-    # so the bot should not attempt to self-join.
-    result = server.invite_user_to_channel(channel="engineering", user="U123")
+    # Private channels (G-prefixed ID here) cannot be self-joined.
+    result = server.invite_user_to_channel(channel="GPRIVATE", user="U123")
     assert result["ok"] is True
     assert result["bot_joined_channel"] is False
     assert not any(c[0] == "conversations_join" for c in fake.calls)

@@ -88,15 +88,18 @@ def invite_user_to_channel(channel: str, user: str) -> dict[str, Any]:
             user_id=user if _looks_like_user_id(user) else None,
             email=None if _looks_like_user_id(user) else user,
         )
-        # The bot can only invite others to channels it belongs to. For public
-        # channels we can self-join first; private channels must be joined
-        # manually, so we let the invite surface the not_in_channel error.
-        if (
-            resolved_channel.get("is_member") is False
-            and not resolved_channel.get("is_private")
-        ):
-            client.join(resolved_channel["id"])
-            joined = True
+        # The bot can only invite others to channels it belongs to. Always
+        # attempt to self-join public channels first — conversations.join is
+        # idempotent, so it is harmless if the bot is already a member. It is
+        # best-effort: if the join fails (e.g. the 'channels:join' scope is
+        # missing) we still try the invite and let that surface the real error.
+        # Private channels cannot be self-joined, so we skip them.
+        if not resolved_channel.get("is_private"):
+            try:
+                client.join(resolved_channel["id"])
+                joined = True
+            except SlackToolError:
+                pass
         client.invite(resolved_channel["id"], [resolved_user["id"]])
     except (SlackToolError, SlackConfigError) as exc:
         return {"error": str(exc)}
@@ -108,7 +111,7 @@ def invite_user_to_channel(channel: str, user: str) -> dict[str, Any]:
         "message": (
             f"Invited {resolved_user['name']} ({resolved_user['id']}) to "
             f"#{resolved_channel['name']} ({resolved_channel['id']})."
-            + (" (Bot self-joined the channel first.)" if joined else "")
+            + (" (Bot ensured it is a member of the channel first.)" if joined else "")
         ),
     }
 

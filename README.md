@@ -120,9 +120,10 @@ To invite someone to a channel, **the bot itself must be a member of that
 channel**. Slack does not let a bot invite others into a channel it has not
 joined.
 
-- **Public channels:** the bot will **self-join automatically** when needed —
-  this requires the `channels:join` scope (included in the manifest). Without
-  that scope, you must add the bot manually.
+- **Public channels:** the bot **always attempts to self-join** before inviting
+  (the call is idempotent and best-effort). This requires the `channels:join`
+  scope (included in the manifest). Without that scope the join is skipped and,
+  if the bot isn't already a member, the invite returns a clear error.
 - **Private channels:** cannot be self-joined. You must add the bot manually
   (e.g. `/invite @slack-management-mcp` from inside the channel) before it can
   invite anyone.
