@@ -110,6 +110,20 @@ class SlackClient:
             if not cursor:
                 break
 
+    # -- membership ------------------------------------------------------------
+
+    def join(self, channel_id: str) -> dict[str, Any]:
+        """Add the bot to a public channel (``conversations.join``).
+
+        Only works for public channels and requires the ``channels:join`` scope.
+        Private channels cannot be self-joined — the bot must be added by a member.
+        """
+        try:
+            resp = self._client.conversations_join(channel=channel_id)
+        except SlackApiError as exc:
+            raise _to_tool_error(exc) from exc
+        return _format_channel(resp["channel"])
+
     # -- invites ---------------------------------------------------------------
 
     def invite(self, channel_id: str, user_ids: list[str]) -> dict[str, Any]:
@@ -152,8 +166,9 @@ _FRIENDLY_ERRORS = {
     "already_in_channel": "That user is already a member of the channel.",
     "not_in_channel": (
         "The bot is not a member of that channel, so it cannot invite others. "
-        "Add the bot to the channel first (it can self-join public channels but "
-        "must be added manually to private channels)."
+        "Add the bot to the channel first by mentioning or inviting it from "
+        "within the channel (e.g. '/invite @your-bot'). For public channels the "
+        "bot can self-join only if it has the 'channels:join' scope."
     ),
     "cant_invite_self": "The bot cannot invite itself.",
     "missing_scope": (

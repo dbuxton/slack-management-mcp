@@ -44,8 +44,14 @@ class FakeWebClient:
 
     def conversations_info(self, channel):  # noqa: N802
         self.calls.append(("conversations_info", {"channel": channel}))
+        # CNEEDJOIN is a public channel the bot has not joined yet.
         return FakeResponse(
-            channel={"id": channel, "name": "general", "is_private": False}
+            channel={
+                "id": channel,
+                "name": "general",
+                "is_private": False,
+                "is_member": channel != "CNEEDJOIN",
+            }
         )
 
     def conversations_list(self, **kwargs):  # noqa: N802
@@ -60,6 +66,10 @@ class FakeWebClient:
             channels=[{"id": "C002", "name": "engineering", "is_private": False}],
             response_metadata={"next_cursor": ""},
         )
+
+    def conversations_join(self, channel):  # noqa: N802
+        self.calls.append(("conversations_join", {"channel": channel}))
+        return FakeResponse(channel={"id": channel, "name": "engineering"})
 
     def conversations_invite(self, channel, users):  # noqa: N802
         self.calls.append(("conversations_invite", {"channel": channel, "users": users}))
@@ -113,6 +123,24 @@ def test_invite_success_resolves_ids(fake_client):
     assert result["user"]["id"] == "U123"
     invited = [c for c in fake.calls if c[0] == "conversations_invite"]
     assert invited and invited[0][1]["users"] == "U123"
+
+
+def test_invite_self_joins_public_channel_when_not_member(fake_client):
+    fake, _ = fake_client
+    result = server.invite_user_to_channel(channel="CNEEDJOIN", user="U123")
+    assert result["ok"] is True
+    assert result["bot_joined_channel"] is True
+    assert any(c[0] == "conversations_join" for c in fake.calls)
+
+
+def test_invite_does_not_join_when_already_member(fake_client):
+    fake, _ = fake_client
+    # conversations_list channels report is_member None (treated as "unknown"),
+    # so the bot should not attempt to self-join.
+    result = server.invite_user_to_channel(channel="engineering", user="U123")
+    assert result["ok"] is True
+    assert result["bot_joined_channel"] is False
+    assert not any(c[0] == "conversations_join" for c in fake.calls)
 
 
 def test_invite_already_in_channel_error_mapping(fake_client):

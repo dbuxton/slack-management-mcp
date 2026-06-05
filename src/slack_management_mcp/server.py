@@ -72,10 +72,13 @@ def invite_user_to_channel(channel: str, user: str) -> dict[str, Any]:
     ``user`` accepts an email address or a user ID. Both are resolved
     automatically before inviting.
 
-    Note: the bot must already be a member of the target channel to invite others.
-    It can self-join public channels but must be added manually to private ones.
+    Note: the bot must be a member of the target channel to invite others. For
+    public channels the bot will self-join automatically if it has the
+    'channels:join' scope. Private channels cannot be self-joined — the bot must
+    be added to them manually before it can invite anyone.
     """
     client = get_client()
+    joined = False
     try:
         resolved_channel = client.find_channel(
             channel_id=channel if _looks_like_channel_id(channel) else None,
@@ -85,6 +88,15 @@ def invite_user_to_channel(channel: str, user: str) -> dict[str, Any]:
             user_id=user if _looks_like_user_id(user) else None,
             email=None if _looks_like_user_id(user) else user,
         )
+        # The bot can only invite others to channels it belongs to. For public
+        # channels we can self-join first; private channels must be joined
+        # manually, so we let the invite surface the not_in_channel error.
+        if (
+            resolved_channel.get("is_member") is False
+            and not resolved_channel.get("is_private")
+        ):
+            client.join(resolved_channel["id"])
+            joined = True
         client.invite(resolved_channel["id"], [resolved_user["id"]])
     except (SlackToolError, SlackConfigError) as exc:
         return {"error": str(exc)}
@@ -92,9 +104,11 @@ def invite_user_to_channel(channel: str, user: str) -> dict[str, Any]:
         "ok": True,
         "channel": {"id": resolved_channel["id"], "name": resolved_channel["name"]},
         "user": {"id": resolved_user["id"], "name": resolved_user["name"]},
+        "bot_joined_channel": joined,
         "message": (
             f"Invited {resolved_user['name']} ({resolved_user['id']}) to "
             f"#{resolved_channel['name']} ({resolved_channel['id']})."
+            + (" (Bot self-joined the channel first.)" if joined else "")
         ),
     }
 
