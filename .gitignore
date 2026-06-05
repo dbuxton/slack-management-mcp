@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+uv.lock
