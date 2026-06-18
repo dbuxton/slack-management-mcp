@@ -121,6 +121,70 @@ class SlackClient:
             raise _to_tool_error(exc) from exc
         return _format_channel(resp["channel"])
 
+    # -- user groups -----------------------------------------------------------
+
+    def find_usergroup(
+        self, handle: str | None = None, usergroup_id: str | None = None
+    ) -> dict[str, Any]:
+        """Find a user group (the '@'-mentionable kind) by handle or by ID.
+
+        Slack has no ``usergroups.info`` endpoint, so we list all groups and
+        match locally. The returned dict includes the current ``users`` so
+        callers can merge new members into them.
+        """
+        if not handle and not usergroup_id:
+            raise SlackToolError(
+                "Provide either 'handle' or 'usergroup_id' to look up a user group."
+            )
+        target_handle = handle.lstrip("@").strip().lower() if handle else None
+        for group in self._list_usergroups():
+            if usergroup_id and group.get("id") == usergroup_id:
+                return _format_usergroup(group)
+            if target_handle and (
+                group.get("handle", "").lower() == target_handle
+                or group.get("name", "").lower() == target_handle
+            ):
+                return _format_usergroup(group)
+        ident = usergroup_id or f"@{target_handle}"
+        raise SlackToolError(
+            f"No user group matching '{ident}' found. User groups are a paid "
+            "Slack feature; check the handle (the @-mention name) or the group "
+            "ID (starts with 'S').",
+            code="usergroup_not_found",
+        )
+
+    def _list_usergroups(self) -> list[dict[str, Any]]:
+        try:
+            resp = self._client.usergroups_list(
+                include_users=True, include_disabled=True
+            )
+        except SlackApiError as exc:
+            raise _to_tool_error(exc) from exc
+        return resp.get("usergroups", [])
+
+    def add_users_to_usergroup(
+        self, usergroup_id: str, user_ids: list[str], existing_users: list[str]
+    ) -> dict[str, Any]:
+        """Add ``user_ids`` to a user group, preserving its current members.
+
+        Slack's ``usergroups.users.update`` *replaces* the whole membership
+        list, so we merge the new users with the existing ones (de-duplicated,
+        order preserved) to behave like an append.
+        """
+        merged = list(dict.fromkeys([*existing_users, *user_ids]))
+        if not merged:
+            raise SlackToolError(
+                "Provide at least one user to add to the group.",
+                code="no_users_provided",
+            )
+        try:
+            resp = self._client.usergroups_users_update(
+                usergroup=usergroup_id, users=",".join(merged)
+            )
+        except SlackApiError as exc:
+            raise _to_tool_error(exc) from exc
+        return _format_usergroup(resp["usergroup"])
+
 
 def _format_user(user: dict[str, Any]) -> dict[str, Any]:
     profile = user.get("profile") or {}
@@ -143,6 +207,18 @@ def _format_channel(channel: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _format_usergroup(group: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": group.get("id"),
+        "handle": group.get("handle"),
+        "name": group.get("name"),
+        "description": group.get("description"),
+        "user_count": group.get("user_count"),
+        "is_disabled": bool(group.get("date_delete")),
+        "users": list(group.get("users") or []),
+    }
+
+
 # Slack error codes mapped to friendlier guidance. Anything not listed falls back
 # to the raw Slack error string.
 _FRIENDLY_ERRORS = {
@@ -156,6 +232,12 @@ _FRIENDLY_ERRORS = {
         "must be added manually to private channels)."
     ),
     "cant_invite_self": "The bot cannot invite itself.",
+    "no_users_provided": "Provide at least one user to add to the group.",
+    "subteam_not_found": "No user group matches that handle or ID.",
+    "permission_denied": (
+        "The bot is not allowed to manage user groups. User groups are a paid "
+        "Slack feature and require the 'usergroups:write' scope."
+    ),
     "missing_scope": (
         "The bot token is missing a required OAuth scope. Check the scopes listed "
         "in the README and reinstall the app."
