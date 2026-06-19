@@ -1,15 +1,25 @@
 # slack-management-mcp
 
 A small, single-purpose [Model Context Protocol](https://modelcontextprotocol.io)
-(MCP) server for **adding users to Slack channels**. It exposes exactly three
-tools and nothing else — it does **not** try to reproduce the full published
-Slack MCP.
+(MCP) server for **adding users to Slack channels and user groups**. It exposes a
+focused handful of tools and nothing else — it does **not** try to reproduce the
+full published Slack MCP.
 
 | Tool | What it does |
 | --- | --- |
 | `lookup_user` | Find a user by email address or user ID. |
 | `lookup_channel` | Find a channel by name or channel ID. |
 | `invite_user_to_channel` | Invite a user (by email or ID) to a channel (by name or ID). |
+| `lookup_usergroup` | Find a user group by handle (`@marketing`) or user group ID. |
+| `add_users_to_usergroup` | Add users (by email or ID) to a user group (by handle or ID). |
+
+> **Channels vs. user groups.** A *channel* is a place where messages are posted.
+> A *user group* is a named, `@`-mentionable collection of people (e.g.
+> `@marketing`) used to ping or reference several people at once. The
+> `*_usergroup` tools operate on the latter. User groups are a **paid** Slack
+> feature. Slack has no "append" API for them, so `add_users_to_usergroup` reads
+> the current membership and rewrites it with the new users merged in — existing
+> members are preserved.
 
 The server authenticates as a **bot** using a single bot token. You install the
 app into your workspace once, and the server acts as that bot — it does not act
@@ -113,6 +123,8 @@ These are preset in the manifest:
 | `channels:manage` | Invite users to public channels. |
 | `groups:write` | Invite users to private channels. |
 | `channels:join` | Let the bot self-join public channels before inviting. |
+| `usergroups:read` | List and read user groups (`usergroups.list`). |
+| `usergroups:write` | Update user group membership (`usergroups.users.update`). |
 
 ### Important: the bot must be in the channel
 

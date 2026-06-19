@@ -67,6 +67,36 @@ class FakeWebClient:
             raise _api_error("already_in_channel")
         return FakeResponse(channel={"id": channel, "name": "engineering"})
 
+    def usergroups_list(self, **kwargs):  # noqa: N802
+        self.calls.append(("usergroups_list", kwargs))
+        return FakeResponse(
+            usergroups=[
+                {
+                    "id": "S001",
+                    "handle": "marketing",
+                    "name": "Marketing Team",
+                    "description": "Folks in marketing",
+                    "user_count": 1,
+                    "users": ["U999"],
+                }
+            ]
+        )
+
+    def usergroups_users_update(self, usergroup, users):  # noqa: N802
+        self.calls.append(
+            ("usergroups_users_update", {"usergroup": usergroup, "users": users})
+        )
+        members = users.split(",") if users else []
+        return FakeResponse(
+            usergroup={
+                "id": usergroup,
+                "handle": "marketing",
+                "name": "Marketing Team",
+                "user_count": len(members),
+                "users": members,
+            }
+        )
+
 
 def _api_error(code: str) -> SlackApiError:
     return SlackApiError(message=code, response=FakeResponse(ok=False, error=code))
@@ -120,3 +150,54 @@ def test_invite_already_in_channel_error_mapping(fake_client):
     with pytest.raises(Exception) as excinfo:
         client.invite("C_ALREADY", ["U123"])
     assert "already a member" in str(excinfo.value)
+
+
+def test_lookup_usergroup_by_handle(fake_client):
+    result = server.lookup_usergroup(handle="@marketing")
+    assert result["id"] == "S001"
+    assert result["handle"] == "marketing"
+    assert result["users"] == ["U999"]
+
+
+def test_lookup_usergroup_not_found(fake_client):
+    result = server.lookup_usergroup(handle="nonexistent")
+    assert "error" in result
+    assert "nonexistent" in result["error"]
+
+
+def test_add_users_to_usergroup_merges_existing_members(fake_client):
+    fake, _ = fake_client
+    result = server.add_users_to_usergroup(
+        usergroup="marketing", users=["alice@example.com"]
+    )
+    assert result["ok"] is True
+    assert result["usergroup"]["id"] == "S001"
+    assert result["added"] == [{"id": "U123", "name": "alice"}]
+    update = [c for c in fake.calls if c[0] == "usergroups_users_update"][0][1]
+    # Existing member U999 is preserved and the new member U123 is appended.
+    assert update["users"].split(",") == ["U999", "U123"]
+    assert result["user_count"] == 2
+
+
+def test_add_users_to_usergroup_accepts_user_id_and_group_id(fake_client):
+    fake, _ = fake_client
+    result = server.add_users_to_usergroup(usergroup="S001", users=["U777"])
+    assert result["ok"] is True
+    update = [c for c in fake.calls if c[0] == "usergroups_users_update"][0][1]
+    assert update["usergroup"] == "S001"
+    assert set(update["users"].split(",")) == {"U999", "U777"}
+    # A user ID is used directly, without an email lookup.
+    assert not any(c[0] == "users_lookupByEmail" for c in fake.calls)
+
+
+def test_add_users_to_usergroup_requires_users(fake_client):
+    result = server.add_users_to_usergroup(usergroup="marketing", users=[])
+    assert "error" in result
+
+
+def test_add_users_to_usergroup_unknown_group(fake_client):
+    result = server.add_users_to_usergroup(
+        usergroup="nope", users=["alice@example.com"]
+    )
+    assert "error" in result
+    assert "No user group" in result["error"]
