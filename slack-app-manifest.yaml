@@ -5,7 +5,7 @@
 # "Bot User OAuth Token" (starts with xoxb-) into the SLACK_BOT_TOKEN env var.
 display_information:
   name: Slack Management MCP
-  description: Look up users, channels and user groups; invite users to channels and add users to user groups.
+  description: Manage Slack users, channels, user groups, canvases and lists.
 
 features:
   bot_user:
@@ -24,6 +24,10 @@ oauth_config:
       - channels:join      # let the bot self-join public channels before inviting
       - usergroups:read    # list / read user groups (usergroups.list)
       - usergroups:write   # update user group membership (usergroups.users.update)
+      - canvases:read      # find canvas sections
+      - canvases:write     # create, edit, delete and share canvases
+      - lists:read         # read list rows and schema
+      - lists:write        # create, update and share lists; manage rows
 
 settings:
   org_deploy_enabled: false

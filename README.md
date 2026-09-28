@@ -1,9 +1,7 @@
 # slack-management-mcp
 
-A small, single-purpose [Model Context Protocol](https://modelcontextprotocol.io)
-(MCP) server for **adding users to Slack channels and user groups**. It exposes a
-focused handful of tools and nothing else — it does **not** try to reproduce the
-full published Slack MCP.
+A focused [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server
+for managing Slack users, channels, user groups, canvases and lists.
 
 | Tool | What it does |
 | --- | --- |
@@ -12,6 +10,17 @@ full published Slack MCP.
 | `invite_user_to_channel` | Invite a user (by email or ID) to a channel (by name or ID). |
 | `lookup_usergroup` | Find a user group by handle (`@marketing`) or user group ID. |
 | `add_users_to_usergroup` | Add users (by email or ID) to a user group (by handle or ID). |
+| `create_canvas` | Create a standalone canvas from Markdown. |
+| `edit_canvas` | Insert, replace or delete a section; replace all content; rename. |
+| `lookup_canvas_sections` | Find section IDs by text or section type. |
+| `delete_canvas` | Permanently delete a canvas. |
+| `set_canvas_access` / `remove_canvas_access` | Grant or revoke user/channel access. |
+| `create_list` / `update_list` | Create a List with columns; change name, description or todo mode. |
+| `get_list_items` / `get_list_item` | Read rows and column schema, with cursor pagination. |
+| `create_list_item` | Add a row, subtask or copy of a row. |
+| `update_list_items` | Update up to 100 cells across rows. |
+| `delete_list_item` | Delete a row. |
+| `set_list_access` / `remove_list_access` | Grant or revoke user/channel access. |
 
 > **Channels vs. user groups.** A *channel* is a place where messages are posted.
 > A *user group* is a named, `@`-mentionable collection of people (e.g.
@@ -54,7 +63,7 @@ own (e.g. for a smoke test) with [`uv`](https://docs.astral.sh/uv/) installed:
 uvx --from git+https://github.com/dbuxton/slack-management-mcp slack-management-mcp
 
 # Local development from a checkout:
-uv run slack-management-mcp
+uv run --locked slack-management-mcp
 ```
 
 Once published to PyPI the bare form works too:
@@ -125,6 +134,15 @@ These are preset in the manifest:
 | `channels:join` | Let the bot self-join public channels before inviting. |
 | `usergroups:read` | List and read user groups (`usergroups.list`). |
 | `usergroups:write` | Update user group membership (`usergroups.users.update`). |
+| `canvases:read` | Find sections within a canvas. |
+| `canvases:write` | Create, edit, delete and share canvases. |
+| `lists:read` | Read List rows and schema. |
+| `lists:write` | Create, update and share Lists; manage rows. |
+
+**Existing installations:** add these four scopes in OAuth & Permissions (or
+update the manifest), then **reinstall the app to the workspace** and use the
+resulting bot token. Adding scopes to the manifest alone does not upgrade an
+installed token. Existing tools keep their current names and arguments.
 
 ### Important: the bot must be in the channel
 
@@ -134,11 +152,72 @@ channels you must add the bot manually (e.g. `/invite @slack-management-mcp` in
 the channel). If the bot is not a member, `invite_user_to_channel` returns a
 clear error explaining this.
 
+## Canvas and List workflows
+
+Canvas and List APIs require a paid Slack workspace and the bot must have access
+to the target resource. New resources belong to the bot; share them with
+`set_canvas_access` or `set_list_access`. Pass either user IDs or channel IDs,
+not both. `owner` transfers ownership to a user.
+
+Create a canvas with `create_canvas(title="Project notes", markdown="# Status\nOn track")`.
+Append with `edit_canvas(canvas_id="F...", operation="insert_at_end", markdown="Next steps")`.
+For a targeted edit, first call `lookup_canvas_sections` with `contains_text`
+and/or `section_types`, then pass a returned section ID to `edit_canvas`.
+Section lookup returns IDs, not the full document. **`replace` without a section
+ID replaces the whole document; `delete_canvas` is permanent.**
+
+For Lists, call `create_list(name="Tasks", todo_mode=True)` or supply `schema`
+column definitions following [Slack's schema format](https://docs.slack.dev/reference/methods/slackLists.create/).
+Use the returned column IDs to create rows. For an existing List, call
+`get_list_items(list_id="F...")`; `include_list=True` returns the column schema.
+Pass `response_metadata.next_cursor` into the next call until it is empty.
+`include_list=False` avoids repeating the schema on subsequent pages.
+
+Text cells require Block Kit rich text, not a plain `text` property:
+
+```json
+{
+  "list_id": "F...",
+  "initial_fields": [{
+    "column_id": "Col...",
+    "rich_text": [{
+      "type": "rich_text",
+      "elements": [{
+        "type": "rich_text_section",
+        "elements": [{"type": "text", "text": "Prepare launch"}]
+      }]
+    }]
+  }]
+}
+```
+
+Pass that object to `create_list_item`. To change it with `update_list_items`,
+use `cells` instead of `initial_fields` and add `row_id` (the returned `Rec...`
+item ID) to each cell. Other typed values include `user: ["U..."]`,
+`date: ["2026-10-01"]`, `select: ["option_id"]` and `checkbox: true`.
+See Slack's [field formats](https://docs.slack.dev/reference/methods/slackLists.items.create/).
+Only supplied cells are updated. `update_list` updates metadata, not column
+schema. There is no workspace-wide List discovery or full canvas-content reader
+in this server: supply existing IDs from Slack links or tool responses.
+
+## Reproducible dependencies
+
+Runtime, development and build dependencies are pinned in `pyproject.toml`.
+The committed `uv.lock` pins transitive dependencies for supported Python
+versions. Use `uv sync --locked --extra dev` and `uv run --locked ...` from a
+checkout; CI rejects a stale lockfile. To update dependencies intentionally,
+change the exact versions, run `uv lock`, then test and commit both files.
+
+`uvx --from git+...` and pip honor direct pins but do not use the checkout's
+lockfile for transitive dependencies. For fully locked deployment, check out a
+specific commit and launch `uv run --locked --project /path/to/checkout
+slack-management-mcp`.
+
 ## Development
 
 ```bash
-uv sync --extra dev      # install deps including pytest
-uv run pytest            # run the unit tests (Slack is mocked; no network)
+uv sync --locked --extra dev      # install deps including pytest
+uv run --locked --extra dev pytest            # run the unit tests (Slack is mocked; no network)
 ```
 
 The tests mock the Slack `WebClient`, so they run without a real workspace or

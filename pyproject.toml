@@ -1,29 +1,29 @@
 [project]
 name = "slack-management-mcp"
 version = "0.1.0"
-description = "A focused Slack MCP server for looking up users/channels and inviting users to channels."
+description = "Slack MCP tools for users, channels, user groups, canvases, and lists."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "David Buxton" }]
 keywords = ["slack", "mcp", "model-context-protocol"]
 dependencies = [
-    "mcp[cli]>=1.2",
-    "slack_sdk>=3.27",
+    "mcp[cli]==1.26.0",
+    "slack_sdk==3.44.1",
 ]
 
 [project.scripts]
 slack-management-mcp = "slack_management_mcp.server:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest==8.4.2"]
 
 [project.urls]
 Homepage = "https://github.com/dbuxton/slack-management-mcp"
 Repository = "https://github.com/dbuxton/slack-management-mcp"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

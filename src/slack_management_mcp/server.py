@@ -6,7 +6,7 @@ variable (a Bot User OAuth token, ``xoxb-...``). See the README for setup.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -173,6 +173,233 @@ def add_users_to_usergroup(usergroup: str, users: list[str]) -> dict[str, Any]:
             f"Group now has {updated.get('user_count')} members."
         ),
     }
+
+
+def _call(method: str, **payload: Any) -> dict[str, Any]:
+    try:
+        return get_client().call(method, **payload)
+    except (SlackToolError, SlackConfigError) as exc:
+        result = {"error": str(exc)}
+        if isinstance(exc, SlackToolError) and exc.code:
+            result["code"] = exc.code
+        return result
+
+
+@mcp.tool()
+def create_canvas(title: str, markdown: str) -> dict[str, Any]:
+    """Create a standalone Slack canvas from Markdown; returns its canvas_id.
+
+    The bot owns the new canvas. Use set_canvas_access to share it.
+    """
+    return _call("canvases.create", title=title,
+                 document_content={"type": "markdown", "markdown": markdown})
+
+
+@mcp.tool()
+def edit_canvas(
+    canvas_id: str,
+    operation: Literal["insert_at_start", "insert_at_end", "insert_before",
+                       "insert_after", "replace", "delete", "rename"],
+    markdown: str | None = None,
+    section_id: str | None = None,
+) -> dict[str, Any]:
+    """Apply one canvas edit. Markdown supplies new content or the renamed title.
+
+    insert_before/insert_after/delete require section_id from lookup_canvas_sections.
+    replace without section_id REPLACES THE ENTIRE CANVAS. delete removes only
+    the specified section; delete_canvas removes the entire canvas permanently.
+    insert_at_start/insert_at_end/rename do not accept section_id.
+    """
+    if operation not in {"insert_at_start", "insert_at_end", "insert_before",
+                         "insert_after", "replace", "delete", "rename"}:
+        return {"error": "Unsupported canvas operation."}
+    if operation in {"insert_before", "insert_after", "delete"} and not section_id:
+        return {"error": f"{operation} requires section_id."}
+    if operation in {"insert_at_start", "insert_at_end", "rename"} and section_id is not None:
+        return {"error": f"{operation} does not accept section_id."}
+    if operation != "delete" and markdown is None:
+        return {"error": f"{operation} requires markdown."}
+    if operation == "delete" and markdown is not None:
+        return {"error": "delete does not accept markdown."}
+    change: dict[str, Any] = {"operation": operation}
+    if section_id is not None:
+        change["section_id"] = section_id
+    if markdown is not None:
+        key = "title_content" if operation == "rename" else "document_content"
+        change[key] = {"type": "markdown", "markdown": markdown}
+    return _call("canvases.edit", canvas_id=canvas_id, changes=[change])
+
+
+@mcp.tool()
+def lookup_canvas_sections(
+    canvas_id: str, contains_text: str | None = None,
+    section_types: list[str] | None = None,
+) -> dict[str, Any]:
+    """Find canvas section IDs for targeted edits (does not return canvas text).
+
+    Filter by text and/or section types such as any_header, h1, h2, h3, list,
+    table, blockquote. Omit section_types to search across types.
+    """
+    criteria = {k: v for k, v in {"contains_text": contains_text,
+                                 "section_types": section_types}.items() if v is not None}
+    if not criteria:
+        return {"error": "Provide contains_text or section_types."}
+    return _call("canvases.sections.lookup", canvas_id=canvas_id, criteria=criteria)
+
+
+@mcp.tool()
+def delete_canvas(canvas_id: str) -> dict[str, Any]:
+    """Permanently delete a whole canvas. Slack cannot restore it."""
+    return _call("canvases.delete", canvas_id=canvas_id)
+
+
+def _access(method: str, id_key: str, resource_id: str,
+            access_level: str | None, user_ids: list[str] | None,
+            channel_ids: list[str] | None) -> dict[str, Any]:
+    if bool(user_ids) == bool(channel_ids):
+        return {"error": "Provide exactly one non-empty user_ids or channel_ids list."}
+    if access_level is not None and access_level not in {"read", "write", "owner"}:
+        return {"error": "access_level must be read, write, or owner."}
+    if access_level == "owner" and channel_ids:
+        return {"error": "Only users can be owners."}
+    return _call(method, **{id_key: resource_id}, access_level=access_level,
+                 user_ids=user_ids or None, channel_ids=channel_ids or None)
+
+
+@mcp.tool()
+def set_canvas_access(
+    canvas_id: str, access_level: Literal["read", "write", "owner"],
+    user_ids: list[str] | None = None, channel_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Grant canvas access to users OR channels by ID; owner transfers ownership."""
+    return _access("canvases.access.set", "canvas_id", canvas_id,
+                   access_level, user_ids, channel_ids)
+
+
+@mcp.tool()
+def remove_canvas_access(
+    canvas_id: str, user_ids: list[str] | None = None,
+    channel_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Remove canvas access for users OR channels by ID."""
+    return _access("canvases.access.delete", "canvas_id", canvas_id,
+                   None, user_ids, channel_ids)
+
+
+@mcp.tool()
+def create_list(
+    name: str, schema: list[dict[str, Any]] | None = None,
+    description_blocks: list[dict[str, Any]] | None = None,
+    todo_mode: bool = False,
+) -> dict[str, Any]:
+    """Create a Slack List; returns its ID and column schema. Requires paid Slack.
+
+    schema columns use key, name, type (text, user, date, select, etc.) and optional
+    is_primary_column/options. Omit schema for a default text column. todo_mode
+    adds completed, assignee and due-date fields. description_blocks uses Slack
+    rich_text blocks. Use returned column IDs (not schema keys) to populate rows.
+    """
+    return _call("slackLists.create", name=name, schema=schema,
+                 description_blocks=description_blocks, todo_mode=todo_mode)
+
+
+@mcp.tool()
+def update_list(
+    list_id: str, name: str | None = None,
+    description_blocks: list[dict[str, Any]] | None = None,
+    todo_mode: bool | None = None,
+) -> dict[str, Any]:
+    """Update a List's name, rich-text description or task-tracking mode.
+
+    This does not change column schema. Omitted properties are left unchanged.
+    """
+    if name is None and description_blocks is None and todo_mode is None:
+        return {"error": "Provide name, description_blocks, or todo_mode."}
+    return _call("slackLists.update", id=list_id, name=name,
+                 description_blocks=description_blocks, todo_mode=todo_mode)
+
+
+@mcp.tool()
+def get_list_items(
+    list_id: str, cursor: str | None = None, limit: int = 100,
+    archived: bool = False, include_list: bool = True,
+) -> dict[str, Any]:
+    """Read one page of List rows, including column schema by default.
+
+    Pass response_metadata.next_cursor back as cursor until empty for more rows.
+    archived selects archived rows instead of normal rows. Use column IDs from
+    the returned list schema when creating/updating items.
+    """
+    if limit < 1 or limit > 100:
+        return {"error": "limit must be between 1 and 100."}
+    return _call("slackLists.items.list", list_id=list_id, cursor=cursor,
+                 limit=limit, archived=archived, include_list=include_list)
+
+
+@mcp.tool()
+def get_list_item(list_id: str, item_id: str) -> dict[str, Any]:
+    """Read a single Slack List row by its Rec... item ID."""
+    return _call("slackLists.items.info", list_id=list_id, id=item_id)
+
+
+@mcp.tool()
+def create_list_item(
+    list_id: str, initial_fields: list[dict[str, Any]] | None = None,
+    parent_item_id: str | None = None,
+    duplicated_item_id: str | None = None,
+) -> dict[str, Any]:
+    """Create a List row, subtask, or copy of an existing row.
+
+    initial_fields entries require column_id and a typed value: rich_text (Block
+    Kit blocks, NOT a plain text property), user (user ID array), date (YYYY-MM-DD
+    array), select (option ID array), checkbox (boolean), etc. Get column IDs
+    from create_list or get_list_items(include_list=True). parent_item_id creates
+    a subtask; duplicated_item_id copies a row. Returns the new item's ID.
+    """
+    return _call("slackLists.items.create", list_id=list_id,
+                 initial_fields=initial_fields, parent_item_id=parent_item_id,
+                 duplicated_item_id=duplicated_item_id)
+
+
+@mcp.tool()
+def update_list_items(list_id: str, cells: list[dict[str, Any]]) -> dict[str, Any]:
+    """Update 1–100 List cells, potentially across multiple rows.
+
+    Each cell needs row_id (the Rec... item ID), column_id, and its typed value
+    (rich_text, user, date, select, checkbox, etc.). Text requires Block Kit
+    rich_text blocks, not a plain text property. Only supplied cells change.
+    """
+    if not 1 <= len(cells) <= 100:
+        return {"error": "Provide between 1 and 100 cells."}
+    if any(not cell.get("row_id") or not cell.get("column_id") for cell in cells):
+        return {"error": "Every cell requires row_id and column_id."}
+    return _call("slackLists.items.update", list_id=list_id, cells=cells)
+
+
+@mcp.tool()
+def delete_list_item(list_id: str, item_id: str) -> dict[str, Any]:
+    """Delete a row from a Slack List by its Rec... item ID."""
+    return _call("slackLists.items.delete", list_id=list_id, id=item_id)
+
+
+@mcp.tool()
+def set_list_access(
+    list_id: str, access_level: Literal["read", "write", "owner"],
+    user_ids: list[str] | None = None, channel_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Grant List access to users OR channels by ID; owner transfers ownership."""
+    return _access("slackLists.access.set", "list_id", list_id,
+                   access_level, user_ids, channel_ids)
+
+
+@mcp.tool()
+def remove_list_access(
+    list_id: str, user_ids: list[str] | None = None,
+    channel_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Remove List access for users OR channels by ID."""
+    return _access("slackLists.access.delete", "list_id", list_id,
+                   None, user_ids, channel_ids)
 
 
 def _looks_like_channel_id(value: str) -> bool:

@@ -1,4 +1,4 @@
-"""Thin wrapper around the Slack Web API for the three operations this MCP exposes.
+"""Thin wrapper around the Slack Web API for the operations this MCP exposes.
 
 The wrapper centralises construction from ``SLACK_BOT_TOKEN`` and turns Slack's
 ``SlackApiError`` responses into readable messages so the MCP tools can surface
@@ -50,6 +50,20 @@ class SlackClient:
 
     def __init__(self, client: WebClient | None = None) -> None:
         self._client = client or WebClient(token=_require_token())
+
+    def call(self, method: str, **payload: Any) -> dict[str, Any]:
+        """Call a fixed endpoint supplied by a tool, preserving Slack metadata.
+
+        JSON is required for nested canvas changes and list field values. Only
+        None is omitted: false, empty strings and arrays may be meaningful.
+        """
+        try:
+            response = self._client.api_call(
+                method, json={key: value for key, value in payload.items() if value is not None}
+            )
+        except SlackApiError as exc:
+            raise _to_tool_error(exc) from exc
+        return dict(response.data)
 
     # -- users -----------------------------------------------------------------
 
@@ -235,8 +249,8 @@ _FRIENDLY_ERRORS = {
     "no_users_provided": "Provide at least one user to add to the group.",
     "subteam_not_found": "No user group matches that handle or ID.",
     "permission_denied": (
-        "The bot is not allowed to manage user groups. User groups are a paid "
-        "Slack feature and require the 'usergroups:write' scope."
+        "The bot is not allowed to perform this action. Check its access to the "
+        "resource and the required OAuth scopes."
     ),
     "missing_scope": (
         "The bot token is missing a required OAuth scope. Check the scopes listed "
