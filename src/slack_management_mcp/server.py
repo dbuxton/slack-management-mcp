@@ -1,16 +1,20 @@
 """MCP server exposing a handful of focused Slack tools.
 
-Run over stdio. Authenticates as a bot using the ``SLACK_BOT_TOKEN`` environment
-variable (a Bot User OAuth token, ``xoxb-...``). See the README for setup.
+Run over stdio. Authenticates with ``SLACK_BOT_TOKEN`` (act as the bot) or with
+a user token from ``slack-management-mcp login`` / ``SLACK_USER_TOKEN`` (act as
+that user). See the README for setup.
 """
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from .slack import SlackClient, SlackConfigError, SlackToolError
+from .auth import SlackConfigError, delete_user_credentials
+from .oauth import login
+from .slack import SlackClient, SlackToolError
 
 mcp = FastMCP("slack-management-mcp")
 
@@ -55,7 +59,7 @@ def lookup_channel(
 
     Provide exactly one of ``name`` (with or without a leading '#') or
     ``channel_id``. Returns the channel's id, name, whether it is private, whether
-    the bot is a member, and member count. Use the returned ``id`` with
+    the acting account is a member, and member count. Use the returned ``id`` with
     ``invite_user_to_channel``.
     """
     try:
@@ -72,8 +76,9 @@ def invite_user_to_channel(channel: str, user: str) -> dict[str, Any]:
     ``user`` accepts an email address or a user ID. Both are resolved
     automatically before inviting.
 
-    Note: the bot must already be a member of the target channel to invite others.
-    It can self-join public channels but must be added manually to private ones.
+    The acting Slack account must already be a member of the target channel.
+    For a bot token, add the bot to private channels manually (it can self-join
+    public channels). For user OAuth, join the channel yourself first.
     """
     client = get_client()
     try:
@@ -189,7 +194,8 @@ def _call(method: str, **payload: Any) -> dict[str, Any]:
 def create_canvas(title: str, markdown: str) -> dict[str, Any]:
     """Create a standalone Slack canvas from Markdown; returns its canvas_id.
 
-    The bot owns the new canvas. Use set_canvas_access to share it.
+    The acting Slack account owns the new canvas (the bot, or your user when
+    signed in with OAuth). Use set_canvas_access to share it.
     """
     return _call("canvases.create", title=title,
                  document_content={"type": "markdown", "markdown": markdown})
@@ -417,9 +423,31 @@ def _looks_like_usergroup_id(value: str) -> bool:
     return bool(value) and value[0] == "S" and value[1:].isalnum() and value.isupper()
 
 
-def main() -> None:
-    """Console-script entry point: run the MCP server over stdio."""
-    mcp.run()
+def main(argv: list[str] | None = None) -> None:
+    """Console-script entry point.
+
+    With no arguments, run the MCP server over stdio. ``login`` and ``logout``
+    manage the saved user OAuth token and do not start the server.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
+        mcp.run()
+        return
+    if args == ["login"]:
+        try:
+            login()
+        except SlackConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(1) from exc
+        return
+    if args == ["logout"]:
+        if delete_user_credentials():
+            print("Removed saved Slack user credentials.")
+        else:
+            print("No saved Slack user credentials to remove.")
+        return
+    print("Usage: slack-management-mcp [login|logout]", file=sys.stderr)
+    raise SystemExit(2)
 
 
 if __name__ == "__main__":

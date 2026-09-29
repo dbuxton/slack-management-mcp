@@ -30,9 +30,10 @@ for managing Slack users, channels, user groups, canvases and lists.
 > the current membership and rewrites it with the new users merged in — existing
 > members are preserved.
 
-The server authenticates as a **bot** using a single bot token. You install the
-app into your workspace once, and the server acts as that bot — it does not act
-on behalf of an individual user and there is no per-request OAuth flow.
+The server can authenticate in two ways. A **bot token** (`xoxb-`) makes every
+action run as the app's bot user. **User OAuth** stores a user token (`xoxp-`)
+from a browser login so actions run as that Slack member instead. If both are
+configured and `SLACK_AUTH_MODE` is unset, the bot token is used.
 
 ## Quick start
 
@@ -43,15 +44,18 @@ on behalf of an individual user and there is no per-request OAuth flow.
    [`slack-app-manifest.yaml`](./slack-app-manifest.yaml).
 3. Create the app, then click **Install to Workspace** and approve it.
 4. Under **OAuth & Permissions**, copy the **Bot User OAuth Token** — it starts
-   with `xoxb-`. This is the only secret you need.
+   with `xoxb-`. To act as yourself instead, skip the bot token and follow
+   [User OAuth](#user-oauth) below.
 
-### 2. Set the token
+### 2. Set the bot token
 
-The server reads one environment variable:
+For the bot, the server reads one environment variable:
 
 ```bash
 export SLACK_BOT_TOKEN="xoxb-your-token-here"
 ```
+
+Leave this unset when you want user OAuth (step 4 of [User OAuth](#user-oauth)).
 
 ### 3. Run it
 
@@ -108,16 +112,72 @@ Before publishing to PyPI, use the git form instead:
 
 ## Authentication & permissions
 
-This server uses a **bot token** (`xoxb-`), not OAuth-per-user. The flow is:
+Choose one credential. If `SLACK_BOT_TOKEN` is set and `SLACK_AUTH_MODE` is
+unset, the server acts as the bot even when a user token is also available.
+Set `SLACK_AUTH_MODE=user` to force the user token, or `SLACK_AUTH_MODE=bot`
+to require the bot token.
 
-1. You create and install the app **once** (steps above). Slack issues a bot
-   token tied to the bot user in your workspace.
-2. You give the server that token via `SLACK_BOT_TOKEN`.
+### Bot token
+
+1. Create and install the app **once** (steps above). Slack issues a bot token
+   tied to the bot user in your workspace.
+2. Give the server that token via `SLACK_BOT_TOKEN`.
 3. Every action the server performs is done **as the bot**.
 
-You do **not** need the app's Client ID, Client Secret, or Signing Secret at
-runtime — those only matter if you implement a browser OAuth flow, which this
-server intentionally does not. The bot token is the single credential.
+A bot-only setup does not need the app's Client ID, Client Secret, or Signing
+Secret.
+
+### User OAuth
+
+User OAuth lets the server act as you. Invites, canvases, and lists run as your
+member, and the server only sees conversations and resources you can see. You
+must already be in a channel to invite someone to it.
+
+1. Update the Slack app from
+   [`slack-app-manifest.yaml`](./slack-app-manifest.yaml). The manifest includes
+   user scopes and the redirect URL `http://127.0.0.1:8765/callback`. Adding
+   these does not replace an existing bot token.
+2. On **Basic Information**, copy the **Client ID** and **Client Secret**.
+3. Log in once on the machine that will run the server:
+
+   ```bash
+   export SLACK_CLIENT_ID="..."
+   export SLACK_CLIENT_SECRET="..."
+   slack-management-mcp login
+   ```
+
+   The command prints an authorize URL, opens a browser, and listens on
+   `127.0.0.1:8765`. It stores the user token (`xoxp-`) at
+   `$XDG_CONFIG_HOME/slack-management-mcp/credentials.json` (default
+   `~/.config/slack-management-mcp/credentials.json`) with mode `0600`. It does
+   not print the token and does not write a bot token.
+   `slack-management-mcp logout` deletes the file.
+
+4. Start the MCP server **without** `SLACK_BOT_TOKEN` so it loads the saved
+   user token:
+
+   ```json
+   {
+     "mcpServers": {
+       "slack-management": {
+         "command": "uvx",
+         "args": ["slack-management-mcp"]
+       }
+     }
+   }
+   ```
+
+For a headless environment, skip the browser and set `SLACK_USER_TOKEN` to a
+user token (`xoxp-`). That is the same kind of credential `login` saves:
+
+```json
+"env": { "SLACK_USER_TOKEN": "xoxp-..." }
+```
+
+`SLACK_REDIRECT_URI` overrides the callback URL. It must be an
+`http://127.0.0.1:<port>/<path>` URL that is also listed on the Slack app.
+Token rotation stays off, so the user token lasts until you revoke the app in
+Slack or run `logout`.
 
 ### Required bot scopes
 
@@ -139,23 +199,48 @@ These are preset in the manifest:
 | `lists:read` | Read List rows and schema. |
 | `lists:write` | Create, update and share Lists; manage rows. |
 
-**Existing installations:** add these four scopes in OAuth & Permissions (or
-update the manifest), then **reinstall the app to the workspace** and use the
-resulting bot token. Adding scopes to the manifest alone does not upgrade an
-installed token. Existing tools keep their current names and arguments.
+**Existing bot installations:** if the installed bot token is missing canvas or
+list scopes, add them in OAuth & Permissions (or update the manifest), then
+**reinstall the app to the workspace** and use the resulting bot token. Adding
+scopes to the manifest alone does not upgrade an installed bot token. Existing
+tools keep their current names and arguments. You do not need to reinstall to
+start using user OAuth; update the manifest so the user scopes and redirect URL
+are allowed, then run `login`.
 
-### Important: the bot must be in the channel
+### Required user scopes
 
-To invite someone to a channel, **the bot itself must already be a member of
-that channel**. For public channels the bot can join automatically; for private
-channels you must add the bot manually (e.g. `/invite @slack-management-mcp` in
-the channel). If the bot is not a member, `invite_user_to_channel` returns a
-clear error explaining this.
+`slack-management-mcp login` requests these user-token scopes (also preset in
+the manifest). `channels:manage` and `channels:join` are bot-only, so user
+invites use the invite scopes instead.
+
+| Scope | Why |
+| --- | --- |
+| `users:read` | Look up users by ID (`users.info`). |
+| `users:read.email` | Look up users by email (`users.lookupByEmail`). |
+| `channels:read` | List and read public channels. |
+| `groups:read` | List and read private channels the user is in. |
+| `channels:write.invites` | Invite users to public channels. |
+| `groups:write.invites` | Invite users to private channels. |
+| `usergroups:read` | List and read user groups (`usergroups.list`). |
+| `usergroups:write` | Update user group membership (`usergroups.users.update`). |
+| `canvases:read` | Find sections within a canvas. |
+| `canvases:write` | Create, edit, delete and share canvases. |
+| `lists:read` | Read List rows and schema. |
+| `lists:write` | Create, update and share Lists; manage rows. |
+
+### Important: the acting account must be in the channel
+
+To invite someone to a channel, **the authenticated account must already be a
+member of that channel**. With a bot token, public channels can be joined by
+the bot and private channels need `/invite @slack-management-mcp`. With user
+OAuth, join the channel yourself first. If the account is not a member,
+`invite_user_to_channel` returns a clear error explaining this.
 
 ## Canvas and List workflows
 
-Canvas and List APIs require a paid Slack workspace and the bot must have access
-to the target resource. New resources belong to the bot; share them with
+Canvas and List APIs require a paid Slack workspace and the acting account must
+have access to the target resource. New resources belong to that account (the
+bot, or you when signed in with user OAuth); share them with
 `set_canvas_access` or `set_list_access`. Pass either user IDs or channel IDs,
 not both. `owner` transfers ownership to a user.
 
