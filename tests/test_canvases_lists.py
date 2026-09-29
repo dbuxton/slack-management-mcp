@@ -135,10 +135,15 @@ def test_slack_errors_are_actionable(transport, code):
         assert "user groups" not in result["error"]
 
 
-def test_missing_token_is_reported(monkeypatch):
+def test_missing_token_is_reported(monkeypatch, tmp_path):
     server.set_client(None)
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
-    assert "SLACK_BOT_TOKEN" in server.create_list("Tasks")["error"]
+    monkeypatch.delenv("SLACK_USER_TOKEN", raising=False)
+    monkeypatch.delenv("SLACK_AUTH_MODE", raising=False)
+    monkeypatch.setenv("SLACK_CREDENTIALS_PATH", str(tmp_path / "missing.json"))
+    error = server.create_list("Tasks")["error"]
+    assert "SLACK_BOT_TOKEN" in error
+    assert "login" in error
 
 
 def test_mcp_registration_schema_and_dispatch(transport):

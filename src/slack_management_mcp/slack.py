@@ -1,21 +1,18 @@
 """Thin wrapper around the Slack Web API for the operations this MCP exposes.
 
-The wrapper centralises construction from ``SLACK_BOT_TOKEN`` and turns Slack's
-``SlackApiError`` responses into readable messages so the MCP tools can surface
-actionable feedback to the calling model/user.
+The wrapper builds a client from the bot token or a user OAuth token and turns
+Slack's ``SlackApiError`` responses into readable messages so the MCP tools can
+surface actionable feedback to the calling model/user.
 """
 
 from __future__ import annotations
 
-import os
 from typing import Any, Iterable
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-
-class SlackConfigError(RuntimeError):
-    """Raised when the server is not configured correctly (e.g. missing token)."""
+from .auth import SlackAuth, SlackConfigError, resolve_auth
 
 
 class SlackToolError(RuntimeError):
@@ -30,26 +27,24 @@ class SlackToolError(RuntimeError):
         self.code = code
 
 
-def _require_token() -> str:
-    token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
-    if not token:
-        raise SlackConfigError(
-            "SLACK_BOT_TOKEN is not set. Create a Slack app, install it to your "
-            "workspace, and set SLACK_BOT_TOKEN to the Bot User OAuth Token "
-            "(starts with 'xoxb-'). See the README for setup instructions."
-        )
-    return token
-
-
 class SlackClient:
     """Small helper around :class:`slack_sdk.WebClient`.
 
     A pre-built ``client`` can be injected (used by the tests); otherwise one is
-    constructed from the ``SLACK_BOT_TOKEN`` environment variable.
+    constructed from :func:`resolve_auth` (bot token, ``SLACK_USER_TOKEN``, or
+    the saved user OAuth login). ``identity`` is ``bot`` or ``user``.
     """
 
-    def __init__(self, client: WebClient | None = None) -> None:
-        self._client = client or WebClient(token=_require_token())
+    def __init__(
+        self, client: WebClient | None = None, *, identity: str | None = None
+    ) -> None:
+        if client is not None:
+            self._client = client
+            self.identity = identity or "bot"
+            return
+        auth: SlackAuth = resolve_auth()
+        self._client = WebClient(token=auth.token)
+        self.identity = auth.identity
 
     def call(self, method: str, **payload: Any) -> dict[str, Any]:
         """Call a fixed endpoint supplied by a tool, preserving Slack metadata.
@@ -62,7 +57,7 @@ class SlackClient:
                 method, json={key: value for key, value in payload.items() if value is not None}
             )
         except SlackApiError as exc:
-            raise _to_tool_error(exc) from exc
+            raise _to_tool_error(exc, self.identity) from exc
         return dict(response.data)
 
     # -- users -----------------------------------------------------------------
@@ -78,7 +73,7 @@ class SlackClient:
             else:
                 resp = self._client.users_lookupByEmail(email=email)
         except SlackApiError as exc:
-            raise _to_tool_error(exc) from exc
+            raise _to_tool_error(exc, self.identity) from exc
         return _format_user(resp["user"])
 
     # -- channels --------------------------------------------------------------
@@ -94,7 +89,7 @@ class SlackClient:
             try:
                 resp = self._client.conversations_info(channel=channel_id)
             except SlackApiError as exc:
-                raise _to_tool_error(exc) from exc
+                raise _to_tool_error(exc, self.identity) from exc
             return _format_channel(resp["channel"])
 
         target = name.lstrip("#").strip().lower()
@@ -102,8 +97,7 @@ class SlackClient:
             if channel.get("name", "").lower() == target:
                 return _format_channel(channel)
         raise SlackToolError(
-            f"No channel named '{name}' found. Note the bot can only see channels "
-            "it is a member of plus public channels in the workspace.",
+            f"No channel named '{name}' found. {_channel_visibility_note(self.identity)}",
             code="channel_not_found",
         )
 
@@ -118,7 +112,7 @@ class SlackClient:
                     cursor=cursor,
                 )
             except SlackApiError as exc:
-                raise _to_tool_error(exc) from exc
+                raise _to_tool_error(exc, self.identity) from exc
             yield from resp.get("channels", [])
             cursor = (resp.get("response_metadata") or {}).get("next_cursor")
             if not cursor:
@@ -132,7 +126,7 @@ class SlackClient:
                 channel=channel_id, users=",".join(user_ids)
             )
         except SlackApiError as exc:
-            raise _to_tool_error(exc) from exc
+            raise _to_tool_error(exc, self.identity) from exc
         return _format_channel(resp["channel"])
 
     # -- user groups -----------------------------------------------------------
@@ -173,7 +167,7 @@ class SlackClient:
                 include_users=True, include_disabled=True
             )
         except SlackApiError as exc:
-            raise _to_tool_error(exc) from exc
+            raise _to_tool_error(exc, self.identity) from exc
         return resp.get("usergroups", [])
 
     def add_users_to_usergroup(
@@ -196,7 +190,7 @@ class SlackClient:
                 usergroup=usergroup_id, users=",".join(merged)
             )
         except SlackApiError as exc:
-            raise _to_tool_error(exc) from exc
+            raise _to_tool_error(exc, self.identity) from exc
         return _format_usergroup(resp["usergroup"])
 
 
@@ -233,21 +227,48 @@ def _format_usergroup(group: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# Slack error codes mapped to friendlier guidance. Anything not listed falls back
-# to the raw Slack error string.
-_FRIENDLY_ERRORS = {
+# Slack error codes that do not depend on whether the token is a bot or a user.
+_STATIC_ERRORS = {
     "users_not_found": "No Slack user matches that email or ID.",
     "user_not_found": "No Slack user matches that ID.",
-    "channel_not_found": "No channel matches that name or ID (the bot may not be able to see it).",
     "already_in_channel": "That user is already a member of the channel.",
+    "no_users_provided": "Provide at least one user to add to the group.",
+    "subteam_not_found": "No user group matches that handle or ID.",
+}
+
+
+def _channel_visibility_note(identity: str) -> str:
+    if identity == "user":
+        return (
+            "Note your Slack user can only see channels they are a member of "
+            "plus public channels in the workspace."
+        )
+    return (
+        "Note the bot can only see channels it is a member of plus public "
+        "channels in the workspace."
+    )
+
+
+def _friendly_error(code: str, identity: str) -> str | None:
+    """Map a Slack error code to guidance for the acting bot or user."""
+    static = _STATIC_ERRORS.get(code)
+    if static:
+        return static
+    if identity == "user":
+        return _USER_ERRORS.get(code)
+    return _BOT_ERRORS.get(code)
+
+
+_BOT_ERRORS = {
+    "channel_not_found": (
+        "No channel matches that name or ID (the bot may not be able to see it)."
+    ),
     "not_in_channel": (
         "The bot is not a member of that channel, so it cannot invite others. "
         "Add the bot to the channel first (it can self-join public channels but "
         "must be added manually to private channels)."
     ),
     "cant_invite_self": "The bot cannot invite itself.",
-    "no_users_provided": "Provide at least one user to add to the group.",
-    "subteam_not_found": "No user group matches that handle or ID.",
     "permission_denied": (
         "The bot is not allowed to perform this action. Check its access to the "
         "resource and the required OAuth scopes."
@@ -260,10 +281,31 @@ _FRIENDLY_ERRORS = {
     "invalid_auth": "The SLACK_BOT_TOKEN is invalid or has been revoked.",
 }
 
+_USER_ERRORS = {
+    "channel_not_found": (
+        "No channel matches that name or ID (your Slack user may not be able to see it)."
+    ),
+    "not_in_channel": (
+        "Your Slack user is not a member of that channel, so they cannot invite "
+        "others. Join the channel first."
+    ),
+    "cant_invite_self": "Your Slack user cannot invite themselves.",
+    "permission_denied": (
+        "Your Slack user is not allowed to perform this action. Check their access "
+        "to the resource and the required OAuth scopes."
+    ),
+    "missing_scope": (
+        "Your user token is missing a required OAuth scope. Check the scopes listed "
+        "in the README and run `slack-management-mcp login` again."
+    ),
+    "not_authed": "No valid user token was supplied.",
+    "invalid_auth": "The user token is invalid or has been revoked.",
+}
 
-def _to_tool_error(exc: SlackApiError) -> SlackToolError:
+
+def _to_tool_error(exc: SlackApiError, identity: str) -> SlackToolError:
     code = ""
     if exc.response is not None:
         code = exc.response.get("error", "") or ""
-    message = _FRIENDLY_ERRORS.get(code) or f"Slack API error: {code or exc}"
+    message = _friendly_error(code, identity) or f"Slack API error: {code or exc}"
     return SlackToolError(message, code=code or None)
